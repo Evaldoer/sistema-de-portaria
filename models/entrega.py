@@ -20,6 +20,9 @@ class Entrega(Base):
     apartamento = Column(String(50), nullable=False)
     morador_nome = Column(String(120), nullable=False)
     recebedor_nome = Column(String(120), nullable=False, default="Portaria")
+    qr_code = Column(String(255), nullable=True)
+    codigo_barras = Column(String(255), nullable=True)
+    foto_url = Column(Text, nullable=True)
     observacao = Column(Text, nullable=True)
     status = Column(Enum(StatusEntrega), default=StatusEntrega.pendente, nullable=False)
     data_recebimento = Column(DateTime, nullable=False, default=local_now)
@@ -34,6 +37,9 @@ class Entrega(Base):
             "apartamento": self.apartamento,
             "morador_nome": self.morador_nome,
             "recebedor_nome": self.recebedor_nome,
+            "qr_code": self.qr_code,
+            "codigo_barras": self.codigo_barras,
+            "foto_url": self.foto_url,
             "observacao": self.observacao,
             "status": self.status.value if self.status else None,
             "data_recebimento": self.data_recebimento.isoformat() if self.data_recebimento else None,

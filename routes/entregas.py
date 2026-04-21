@@ -52,6 +52,9 @@ def criar_entrega():
             apartamento=data["apartamento"].strip(),
             morador_nome=data["morador_nome"].strip(),
             recebedor_nome=(data.get("recebedor_nome") or "Portaria").strip(),
+            qr_code=(data.get("qr_code") or "").strip() or None,
+            codigo_barras=(data.get("codigo_barras") or "").strip() or None,
+            foto_url=(data.get("foto_url") or "").strip() or None,
             observacao=data.get("observacao"),
             status=StatusEntrega.pendente,
             data_recebimento=local_now(),
@@ -82,6 +85,12 @@ def atualizar_entrega(item_id):
             entrega.morador_nome = data["morador_nome"].strip()
         if "recebedor_nome" in data and data["recebedor_nome"]:
             entrega.recebedor_nome = data["recebedor_nome"].strip()
+        if "qr_code" in data:
+            entrega.qr_code = (data["qr_code"] or "").strip() or None
+        if "codigo_barras" in data:
+            entrega.codigo_barras = (data["codigo_barras"] or "").strip() or None
+        if "foto_url" in data:
+            entrega.foto_url = (data["foto_url"] or "").strip() or None
         if "observacao" in data:
             entrega.observacao = data["observacao"]
         if "status" in data:

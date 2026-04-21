@@ -146,7 +146,14 @@ def seed_portaria():
             db.add_all(
                 [
                     Entrega(descricao="Encomenda Mercado Livre", apartamento="101", morador_nome="Ana Souza", recebedor_nome="Portaria"),
-                    Entrega(descricao="Pedido de farmacia", apartamento="202", morador_nome="Carlos Lima", recebedor_nome="Portaria"),
+                    Entrega(
+                        descricao="Pedido de farmacia",
+                        apartamento="202",
+                        morador_nome="Carlos Lima",
+                        recebedor_nome="Portaria",
+                        qr_code="QRCODE-2026-0002",
+                        codigo_barras="7891234567890",
+                    ),
                 ]
             )
 

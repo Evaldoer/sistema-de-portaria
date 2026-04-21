@@ -107,6 +107,9 @@ def bootstrap_database():
     # Compatibilidade com bases SQLite já existentes do CRUD antigo de entregas.
     _add_column_if_missing("entregas", "morador_nome", "VARCHAR(120) NOT NULL DEFAULT 'Nao informado'")
     _add_column_if_missing("entregas", "recebedor_nome", "VARCHAR(120) NOT NULL DEFAULT 'Portaria'")
+    _add_column_if_missing("entregas", "qr_code", "VARCHAR(255)")
+    _add_column_if_missing("entregas", "codigo_barras", "VARCHAR(255)")
+    _add_column_if_missing("entregas", "foto_url", "TEXT")
     _add_column_if_missing("entregas", "observacao", "TEXT")
     _add_column_if_missing("entregas", "data_recebimento", "DATETIME")
     _add_column_if_missing("entregas", "data_entrega", "DATETIME")
