@@ -1,0 +1,9 @@
+.env
+database.db
+venv/
+__pycache__/
+*.pyc
+
+portaria-panel/node_modules/
+portaria-panel/dist/
+portaria-panel/.vite/
