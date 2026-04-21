@@ -4,6 +4,32 @@ venv/
 __pycache__/
 *.pyc
 
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Frontend outputs
+node_modules/
+dist/
+dist-ssr/
+*.local
+
 portaria-panel/node_modules/
 portaria-panel/dist/
 portaria-panel/.vite/
+
+# Editor and system files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
