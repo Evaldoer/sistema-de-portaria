@@ -1,6 +1,14 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import { useEffect, useRef, useState } from "react";
 
+import {
+  capturePhotoFromVideo,
+  detectBarcodeValue,
+  detectQrValue,
+  readImageFileAsDataUrl,
+  supportsNativeBarcodeDetector,
+  uploadDeliveryPhoto,
+} from "../lib/deliveryMedia";
 import { api } from "../services/api";
 import "../App.css";
 
@@ -42,18 +50,6 @@ const endpoints = {
   reservas: "/api/reservas",
 };
 
-const barcodeFormats = [
-  "qr_code",
-  "code_128",
-  "code_39",
-  "ean_13",
-  "ean_8",
-  "upc_a",
-  "upc_e",
-  "itf",
-  "codabar",
-];
-
 function resourceUrl(section, id = null) {
   const base = endpoints[section].replace(/\/$/, "");
   return id === null ? base : `${base}/${id}`;
@@ -90,13 +86,13 @@ function SectionHeader({ eyebrow, title, description }) {
 }
 
 function ScannerSupportHint() {
-  const hasBarcodeDetector = typeof BarcodeDetector !== "undefined";
+  const hasNativeDetector = supportsNativeBarcodeDetector();
 
   return (
     <p className="camera-hint">
-      {hasBarcodeDetector
-        ? "Leitura automatica disponivel. Se a camera ao vivo falhar, use a leitura por imagem."
-        : "Este navegador pode nao ler QR code ou codigo de barras ao vivo. Prefira a opcao por imagem."}
+      {hasNativeDetector
+        ? "Leitura automatica disponivel. Se a camera ao vivo falhar, o painel usa um fallback de leitura por imagem."
+        : "Este navegador nao oferece detector nativo, mas o painel continua tentando ler QR code e codigo de barras por fallback."}
     </p>
   );
 }
@@ -122,6 +118,8 @@ function Dashboard() {
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
   const scanFrameRef = useRef(null);
+  const scanBusyRef = useRef(false);
+  const lastScanAtRef = useRef(0);
   const photoInputRef = useRef(null);
   const qrInputRef = useRef(null);
   const barcodeInputRef = useRef(null);
@@ -180,6 +178,8 @@ function Dashboard() {
       cancelAnimationFrame(scanFrameRef.current);
       scanFrameRef.current = null;
     }
+    scanBusyRef.current = false;
+    lastScanAtRef.current = 0;
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
@@ -188,37 +188,6 @@ function Dashboard() {
       videoRef.current.srcObject = null;
     }
     setCameraMode(null);
-  }
-
-  async function detectCodeFromSource(source, mode) {
-    if (typeof BarcodeDetector === "undefined") {
-      throw new Error("Leitura automatica nao suportada neste navegador.");
-    }
-
-    const detector = new BarcodeDetector({ formats: barcodeFormats });
-    const codes = await detector.detect(source);
-
-    if (!codes.length) {
-      throw new Error(mode === "qr" ? "Nenhum QR code encontrado na imagem." : "Nenhum codigo de barras encontrado na imagem.");
-    }
-
-    const rawValue = codes[0].rawValue || "";
-    if (mode === "qr") {
-      updateForm("entregas", "qr_code", rawValue);
-      setMessage("QR code lido com sucesso.");
-    } else {
-      updateForm("entregas", "codigo_barras", rawValue);
-      setMessage("Codigo de barras lido com sucesso.");
-    }
-  }
-
-  function readFileAsDataUrl(file) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = () => reject(new Error("Nao foi possivel ler a imagem."));
-      reader.readAsDataURL(file);
-    });
   }
 
   function loadImage(dataUrl) {
@@ -266,68 +235,74 @@ function Dashboard() {
   }
 
   async function startScanLoop(mode) {
-    if (typeof BarcodeDetector === "undefined") {
-      setCameraError("Leitura automatica nao suportada neste navegador. Digite o codigo manualmente.");
-      return;
-    }
+    const scan = async () => {
+      if (!videoRef.current || videoRef.current.readyState < 2) {
+        scanFrameRef.current = requestAnimationFrame(scan);
+        return;
+      }
 
-    try {
-      const detector = new BarcodeDetector({ formats: barcodeFormats });
+      const now = Date.now();
+      if (scanBusyRef.current || now - lastScanAtRef.current < 500) {
+        scanFrameRef.current = requestAnimationFrame(scan);
+        return;
+      }
 
-      const scan = async () => {
-        if (!videoRef.current || videoRef.current.readyState < 2) {
-          scanFrameRef.current = requestAnimationFrame(scan);
-          return;
+      scanBusyRef.current = true;
+      lastScanAtRef.current = now;
+
+      try {
+        const rawValue =
+          mode === "qr"
+            ? await detectQrValue(videoRef.current)
+            : await detectBarcodeValue(videoRef.current);
+
+        if (mode === "qr") {
+          updateForm("entregas", "qr_code", rawValue);
+          setMessage("QR code lido com sucesso.");
+        } else {
+          updateForm("entregas", "codigo_barras", rawValue);
+          setMessage("Codigo de barras lido com sucesso.");
         }
+        stopCamera();
+        return;
+      } catch (error) {
+        const messageText = error?.message || "";
+        const isNoMatch =
+          messageText.includes("Nenhum QR code") ||
+          messageText.includes("Nenhum codigo de barras") ||
+          messageText.includes("No MultiFormat Readers were able to detect");
 
-                        try {
-          const codes = await detector.detect(videoRef.current);
-          if (codes.length > 0) {
-            const rawValue = codes[0].rawValue || "";
-            if (mode === "qr") {
-              updateForm("entregas", "qr_code", rawValue);
-              setMessage("QR code lido com sucesso.");
-            } else {
-              updateForm("entregas", "codigo_barras", rawValue);
-              setMessage("Codigo de barras lido com sucesso.");
-            }
-            stopCamera();
-            return;
-          }
-        } catch (error) {
+        if (!isNoMatch) {
           console.error(error);
           setCameraError("Nao foi possivel ler o codigo automaticamente.");
           stopCamera();
           return;
         }
-
-        scanFrameRef.current = requestAnimationFrame(scan);
-      };
+      } finally {
+        scanBusyRef.current = false;
+      }
 
       scanFrameRef.current = requestAnimationFrame(scan);
-    } catch (error) {
-      console.error(error);
-      setCameraError("Detector de codigo indisponivel neste dispositivo.");
-    }
+    };
+
+    scanFrameRef.current = requestAnimationFrame(scan);
   }
 
-  function capturePackagePhoto() {
+  async function capturePackagePhoto() {
     if (!videoRef.current || !canvasRef.current) {
       setCameraError("Camera nao inicializada para captura.");
       return;
     }
 
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-
-    canvas.width = video.videoWidth || 1280;
-    canvas.height = video.videoHeight || 720;
-
-    const context = canvas.getContext("2d");
-    context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    updateForm("entregas", "foto_url", canvas.toDataURL("image/jpeg", 0.92));
-    setMessage("Foto da encomenda capturada com sucesso.");
-    stopCamera();
+    try {
+      const photoUrl = await capturePhotoFromVideo(videoRef.current, canvasRef.current);
+      updateForm("entregas", "foto_url", photoUrl);
+      setMessage("Foto da encomenda capturada com sucesso.");
+      stopCamera();
+    } catch (error) {
+      console.error(error);
+      setCameraError(error.message || "Nao foi possivel capturar a foto.");
+    }
   }
 
   async function handleImageSelection(event, mode) {
@@ -337,16 +312,27 @@ function Dashboard() {
     if (!file) return;
 
     try {
-      const dataUrl = await readFileAsDataUrl(file);
-
       if (mode === "foto") {
-        updateForm("entregas", "foto_url", dataUrl);
+        const photoUrl = await uploadDeliveryPhoto(file);
+        updateForm("entregas", "foto_url", photoUrl);
         setMessage("Foto da encomenda carregada com sucesso.");
         return;
       }
 
+      const dataUrl = await readImageFileAsDataUrl(file);
       const image = await loadImage(dataUrl);
-      await detectCodeFromSource(image, mode);
+      const rawValue =
+        mode === "qr"
+          ? await detectQrValue(image)
+          : await detectBarcodeValue(image);
+
+      if (mode === "qr") {
+        updateForm("entregas", "qr_code", rawValue);
+        setMessage("QR code lido com sucesso.");
+      } else {
+        updateForm("entregas", "codigo_barras", rawValue);
+        setMessage("Codigo de barras lido com sucesso.");
+      }
     } catch (error) {
       console.error(error);
       setMessage(error.message || "Nao foi possivel processar a imagem.");

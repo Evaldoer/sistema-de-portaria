@@ -1,5 +1,14 @@
-import { useEffect, useState } from "react";
+/* eslint-disable react-hooks/set-state-in-effect */
+import { useEffect, useRef, useState } from "react";
 
+import {
+  capturePhotoFromVideo,
+  detectBarcodeValue,
+  detectQrValue,
+  readImageFileAsDataUrl,
+  supportsNativeBarcodeDetector,
+  uploadDeliveryPhoto,
+} from "../lib/deliveryMedia";
 import { api } from "../services/api";
 import "../App.css";
 
@@ -17,7 +26,16 @@ const initialForms = {
   moradores: { nome: "", apartamento: "", telefone: "", email: "", bloco: "", observacao: "" },
   visitantes: { nome: "", documento: "", morador_nome: "", apartamento: "", motivo: "", status: "autorizado", observacao: "" },
   veiculos: { placa: "", modelo: "", cor: "", morador_nome: "", apartamento: "", tipo: "carro", vaga: "", observacao: "" },
-  entregas: { descricao: "", apartamento: "", morador_nome: "", recebedor_nome: "Portaria", observacao: "" },
+  entregas: {
+    descricao: "",
+    apartamento: "",
+    morador_nome: "",
+    recebedor_nome: "Portaria",
+    qr_code: "",
+    codigo_barras: "",
+    foto_url: "",
+    observacao: "",
+  },
   ocorrencias: { titulo: "", categoria: "", local: "", prioridade: "media", responsavel: "", status: "aberta", descricao: "" },
   reservas: { area: "", morador_nome: "", apartamento: "", data_reserva: "", horario: "", convidados: 0, status: "solicitada", observacao: "" },
 };
@@ -39,7 +57,9 @@ function resourceUrl(section, id = null) {
 
 function formatDate(value) {
   if (!value) return "-";
-  return new Date(value).toLocaleString("pt-BR");
+  return new Date(value).toLocaleString("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+  });
 }
 
 function emptyValue(value) {
@@ -48,6 +68,11 @@ function emptyValue(value) {
 
 function StatusBadge({ children, tone = "neutral" }) {
   return <span className={`status-badge ${tone}`}>{children}</span>;
+}
+
+function PackagePhoto({ src, alt }) {
+  if (!src) return null;
+  return <img className="package-photo" src={src} alt={alt} />;
 }
 
 function SectionHeader({ eyebrow, title, description }) {
@@ -60,11 +85,25 @@ function SectionHeader({ eyebrow, title, description }) {
   );
 }
 
+function ScannerSupportHint() {
+  const hasNativeDetector = supportsNativeBarcodeDetector();
+
+  return (
+    <p className="camera-hint">
+      {hasNativeDetector
+        ? "Leitura automatica disponivel. Se a camera ao vivo falhar, o painel usa um fallback de leitura por imagem."
+        : "Este navegador nao oferece detector nativo, mas o painel continua tentando ler QR code e codigo de barras por fallback."}
+    </p>
+  );
+}
+
 function Dashboard() {
   const [activeTab, setActiveTab] = useState("visao-geral");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+  const [cameraMode, setCameraMode] = useState(null);
+  const [cameraError, setCameraError] = useState("");
   const [data, setData] = useState({
     resumo: { metricas: {}, recentes: { visitantes: [], ocorrencias: [], entregas: [] } },
     moradores: [],
@@ -75,6 +114,15 @@ function Dashboard() {
     reservas: [],
   });
   const [forms, setForms] = useState(initialForms);
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const streamRef = useRef(null);
+  const scanFrameRef = useRef(null);
+  const scanBusyRef = useRef(false);
+  const lastScanAtRef = useRef(0);
+  const photoInputRef = useRef(null);
+  const qrInputRef = useRef(null);
+  const barcodeInputRef = useRef(null);
 
   async function loadData() {
     setLoading(true);
@@ -118,6 +166,177 @@ function Dashboard() {
         [field]: value,
       },
     }));
+  }
+
+  function clearDeliveryField(field, successMessage) {
+    updateForm("entregas", field, "");
+    setMessage(successMessage);
+  }
+
+  function stopCamera() {
+    if (scanFrameRef.current) {
+      cancelAnimationFrame(scanFrameRef.current);
+      scanFrameRef.current = null;
+    }
+    scanBusyRef.current = false;
+    lastScanAtRef.current = 0;
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setCameraMode(null);
+  }
+
+  function loadImage(dataUrl) {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error("Nao foi possivel carregar a imagem selecionada."));
+      image.src = dataUrl;
+    });
+  }
+
+  useEffect(() => stopCamera, []);
+
+  async function startCamera(mode) {
+    stopCamera();
+    setCameraError("");
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError("Este navegador nao permite acesso a camera.");
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" } },
+        audio: false,
+      });
+
+      streamRef.current = stream;
+      setCameraMode(mode);
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+
+      if (mode !== "foto") {
+        startScanLoop(mode);
+      }
+    } catch (error) {
+      console.error(error);
+      setCameraError("Nao foi possivel abrir a camera. Verifique permissao do navegador e use localhost ou HTTPS.");
+      stopCamera();
+    }
+  }
+
+  async function startScanLoop(mode) {
+    const scan = async () => {
+      if (!videoRef.current || videoRef.current.readyState < 2) {
+        scanFrameRef.current = requestAnimationFrame(scan);
+        return;
+      }
+
+      const now = Date.now();
+      if (scanBusyRef.current || now - lastScanAtRef.current < 500) {
+        scanFrameRef.current = requestAnimationFrame(scan);
+        return;
+      }
+
+      scanBusyRef.current = true;
+      lastScanAtRef.current = now;
+
+      try {
+        const rawValue =
+          mode === "qr"
+            ? await detectQrValue(videoRef.current)
+            : await detectBarcodeValue(videoRef.current);
+
+        if (mode === "qr") {
+          updateForm("entregas", "qr_code", rawValue);
+          setMessage("QR code lido com sucesso.");
+        } else {
+          updateForm("entregas", "codigo_barras", rawValue);
+          setMessage("Codigo de barras lido com sucesso.");
+        }
+        stopCamera();
+        return;
+      } catch (error) {
+        const messageText = error?.message || "";
+        const isNoMatch =
+          messageText.includes("Nenhum QR code") ||
+          messageText.includes("Nenhum codigo de barras") ||
+          messageText.includes("No MultiFormat Readers were able to detect");
+
+        if (!isNoMatch) {
+          console.error(error);
+          setCameraError("Nao foi possivel ler o codigo automaticamente.");
+          stopCamera();
+          return;
+        }
+      } finally {
+        scanBusyRef.current = false;
+      }
+
+      scanFrameRef.current = requestAnimationFrame(scan);
+    };
+
+    scanFrameRef.current = requestAnimationFrame(scan);
+  }
+
+  async function capturePackagePhoto() {
+    if (!videoRef.current || !canvasRef.current) {
+      setCameraError("Camera nao inicializada para captura.");
+      return;
+    }
+
+    try {
+      const photoUrl = await capturePhotoFromVideo(videoRef.current, canvasRef.current);
+      updateForm("entregas", "foto_url", photoUrl);
+      setMessage("Foto da encomenda capturada com sucesso.");
+      stopCamera();
+    } catch (error) {
+      console.error(error);
+      setCameraError(error.message || "Nao foi possivel capturar a foto.");
+    }
+  }
+
+  async function handleImageSelection(event, mode) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+
+    if (!file) return;
+
+    try {
+      if (mode === "foto") {
+        const photoUrl = await uploadDeliveryPhoto(file);
+        updateForm("entregas", "foto_url", photoUrl);
+        setMessage("Foto da encomenda carregada com sucesso.");
+        return;
+      }
+
+      const dataUrl = await readImageFileAsDataUrl(file);
+      const image = await loadImage(dataUrl);
+      const rawValue =
+        mode === "qr"
+          ? await detectQrValue(image)
+          : await detectBarcodeValue(image);
+
+      if (mode === "qr") {
+        updateForm("entregas", "qr_code", rawValue);
+        setMessage("QR code lido com sucesso.");
+      } else {
+        updateForm("entregas", "codigo_barras", rawValue);
+        setMessage("Codigo de barras lido com sucesso.");
+      }
+    } catch (error) {
+      console.error(error);
+      setMessage(error.message || "Nao foi possivel processar a imagem.");
+    }
   }
 
   async function handleCreate(section, event) {
@@ -476,8 +695,96 @@ function Dashboard() {
                   <input placeholder="Apartamento" value={forms.entregas.apartamento} onChange={(event) => updateForm("entregas", "apartamento", event.target.value)} />
                   <input placeholder="Morador" value={forms.entregas.morador_nome} onChange={(event) => updateForm("entregas", "morador_nome", event.target.value)} />
                   <input placeholder="Recebido por" value={forms.entregas.recebedor_nome} onChange={(event) => updateForm("entregas", "recebedor_nome", event.target.value)} />
+                  <input placeholder="QR code" value={forms.entregas.qr_code} onChange={(event) => updateForm("entregas", "qr_code", event.target.value)} />
+                  <input placeholder="Codigo de barras" value={forms.entregas.codigo_barras} onChange={(event) => updateForm("entregas", "codigo_barras", event.target.value)} />
+                  <input className="span-2" placeholder="Foto da encomenda (URL ou base64)" value={forms.entregas.foto_url} onChange={(event) => updateForm("entregas", "foto_url", event.target.value)} />
                   <input className="span-2" placeholder="Observacao" value={forms.entregas.observacao} onChange={(event) => updateForm("entregas", "observacao", event.target.value)} />
                 </div>
+                <div className="camera-actions">
+                  <button className="secondary-button" type="button" onClick={() => startCamera("qr")} disabled={saving}>
+                    Ler QR code
+                  </button>
+                  <button className="ghost-button" type="button" onClick={() => qrInputRef.current?.click()} disabled={saving}>
+                    Ler QR por imagem
+                  </button>
+                  <button className="secondary-button" type="button" onClick={() => startCamera("barcode")} disabled={saving}>
+                    Ler codigo de barras
+                  </button>
+                  <button className="ghost-button" type="button" onClick={() => barcodeInputRef.current?.click()} disabled={saving}>
+                    Ler barras por imagem
+                  </button>
+                  <button className="secondary-button" type="button" onClick={() => startCamera("foto")} disabled={saving}>
+                    Tirar foto
+                  </button>
+                  <button className="ghost-button" type="button" onClick={() => photoInputRef.current?.click()} disabled={saving}>
+                    Carregar foto
+                  </button>
+                </div>
+                <ScannerSupportHint />
+                <div className="camera-actions compact">
+                  <button className="ghost-button" type="button" onClick={() => clearDeliveryField("qr_code", "QR code removido.")} disabled={saving || !forms.entregas.qr_code}>
+                    Limpar QR
+                  </button>
+                  <button className="ghost-button" type="button" onClick={() => clearDeliveryField("codigo_barras", "Codigo de barras removido.")} disabled={saving || !forms.entregas.codigo_barras}>
+                    Limpar barras
+                  </button>
+                  <button className="ghost-button" type="button" onClick={() => clearDeliveryField("foto_url", "Foto removida da entrega.")} disabled={saving || !forms.entregas.foto_url}>
+                    Limpar foto
+                  </button>
+                </div>
+                <input
+                  ref={qrInputRef}
+                  className="hidden-input"
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={(event) => handleImageSelection(event, "qr")}
+                />
+                <input
+                  ref={barcodeInputRef}
+                  className="hidden-input"
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={(event) => handleImageSelection(event, "barcode")}
+                />
+                <input
+                  ref={photoInputRef}
+                  className="hidden-input"
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={(event) => handleImageSelection(event, "foto")}
+                />
+                {(cameraMode || cameraError) && (
+                  <div className="camera-panel">
+                    {cameraMode ? (
+                      <>
+                        <video ref={videoRef} className="camera-preview" autoPlay playsInline muted />
+                        <canvas ref={canvasRef} className="camera-canvas" />
+                        <p className="camera-hint">
+                          {cameraMode === "foto"
+                            ? "Posicione a encomenda e clique em capturar."
+                            : cameraMode === "qr"
+                              ? "Aponte a camera para o QR code."
+                              : "Aponte a camera para o codigo de barras."}
+                        </p>
+                        <div className="card-actions">
+                          {cameraMode === "foto" && (
+                            <button className="primary-button" type="button" onClick={capturePackagePhoto}>
+                              Capturar foto
+                            </button>
+                          )}
+                          <button className="ghost-button" type="button" onClick={stopCamera}>
+                            Fechar camera
+                          </button>
+                        </div>
+                      </>
+                    ) : null}
+                    {cameraError ? <p className="camera-error">{cameraError}</p> : null}
+                  </div>
+                )}
+                <PackagePhoto src={forms.entregas.foto_url} alt="Preview da foto da encomenda em cadastro" />
                 <button className="primary-button" type="submit" disabled={saving}>Registrar entrega</button>
               </form>
 
@@ -486,12 +793,15 @@ function Dashboard() {
                 <div className="data-grid">
                   {data.entregas.map((item) => (
                     <article className="data-card" key={item.id}>
+                      <PackagePhoto src={item.foto_url} alt={`Foto da encomenda ${item.descricao}`} />
                       <div className="card-topline">
                         <strong>{item.descricao}</strong>
                         <StatusBadge tone={item.status === "entregue" ? "green" : item.status === "cancelada" ? "red" : "amber"}>{item.status}</StatusBadge>
                       </div>
                       <p>{item.morador_nome} · Apto {item.apartamento}</p>
                       <p>Recebido por {item.recebedor_nome}</p>
+                      <p>QR code: {emptyValue(item.qr_code)}</p>
+                      <p>Codigo de barras: {emptyValue(item.codigo_barras)}</p>
                       <p>Entrada: {formatDate(item.data_recebimento)}</p>
                       <div className="card-actions">
                         {item.status !== "entregue" && (
