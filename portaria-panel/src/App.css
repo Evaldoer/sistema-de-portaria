@@ -327,6 +327,10 @@
   margin-bottom: 16px;
 }
 
+.camera-actions.compact {
+  margin-top: -4px;
+}
+
 .camera-panel {
   display: flex;
   flex-direction: column;

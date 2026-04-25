@@ -89,6 +89,18 @@ function SectionHeader({ eyebrow, title, description }) {
   );
 }
 
+function ScannerSupportHint() {
+  const hasBarcodeDetector = typeof BarcodeDetector !== "undefined";
+
+  return (
+    <p className="camera-hint">
+      {hasBarcodeDetector
+        ? "Leitura automatica disponivel. Se a camera ao vivo falhar, use a leitura por imagem."
+        : "Este navegador pode nao ler QR code ou codigo de barras ao vivo. Prefira a opcao por imagem."}
+    </p>
+  );
+}
+
 function Dashboard() {
   const [activeTab, setActiveTab] = useState("visao-geral");
   const [loading, setLoading] = useState(true);
@@ -156,6 +168,11 @@ function Dashboard() {
         [field]: value,
       },
     }));
+  }
+
+  function clearDeliveryField(field, successMessage) {
+    updateForm("entregas", field, "");
+    setMessage(successMessage);
   }
 
   function stopCamera() {
@@ -717,6 +734,18 @@ function Dashboard() {
                     Carregar foto
                   </button>
                 </div>
+                <ScannerSupportHint />
+                <div className="camera-actions compact">
+                  <button className="ghost-button" type="button" onClick={() => clearDeliveryField("qr_code", "QR code removido.")} disabled={saving || !forms.entregas.qr_code}>
+                    Limpar QR
+                  </button>
+                  <button className="ghost-button" type="button" onClick={() => clearDeliveryField("codigo_barras", "Codigo de barras removido.")} disabled={saving || !forms.entregas.codigo_barras}>
+                    Limpar barras
+                  </button>
+                  <button className="ghost-button" type="button" onClick={() => clearDeliveryField("foto_url", "Foto removida da entrega.")} disabled={saving || !forms.entregas.foto_url}>
+                    Limpar foto
+                  </button>
+                </div>
                 <input
                   ref={qrInputRef}
                   className="hidden-input"
@@ -769,6 +798,7 @@ function Dashboard() {
                     {cameraError ? <p className="camera-error">{cameraError}</p> : null}
                   </div>
                 )}
+                <PackagePhoto src={forms.entregas.foto_url} alt="Preview da foto da encomenda em cadastro" />
                 <button className="primary-button" type="submit" disabled={saving}>Registrar entrega</button>
               </form>
 
